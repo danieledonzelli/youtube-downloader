@@ -4,13 +4,25 @@ directories:
   output: dist
   buildResources: build
 
+# 1. SPECIFICHIAMO COSA VA DENTRO L'ASAR (Solo il codice compilato)
+files:
+  - out/main/**/*
+  - out/preload/**/*
+  - out/renderer/**/*
+  - "!resources/**/*" # <--- IMPORTANTE: Esclude la cartella resources dall'ASAR
+
+# 2. SPECIFICHIAMO COSA VA FUORI (I binari pesanti)
 extraResources:
-  - from: resources/${platform}
-    to: bin
-  - from: resources/icon.ico # Aggiungi questa riga per Windows
-    to: bin/icon.ico
-  - from: resources/icon.png # Per la finestra e per Mac
-    to: bin/icon.png
+  - from: "resources/win"
+    to: "bin/win"
+    filter:
+      - "**/*"
+  - from: "resources/mac/${arch}" # Prende x64 o arm64 a seconda della build
+    to: "bin"
+    filter:
+      - "**/*"
+  - from: "resources/icon.png"
+    to: "bin/icon.png"
 
 win:
   icon: build/icon.ico
@@ -21,6 +33,13 @@ portable:
   artifactName: "${productName}_Portable_${version}.${ext}"
 
 mac:
-  icon: build/icon.icns
+  icon: build/icons/icon.icns
   target:
-    - dmg
+    - target: dmg
+      arch:
+        - universal
+  category: public.app-category.utilities
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
