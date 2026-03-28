@@ -1,0 +1,26 @@
+appId: com.youtube.downloader
+productName: YouTube Downloader
+directories:
+  output: dist
+  buildResources: build
+
+extraResources:
+  - from: resources/${platform}
+    to: bin
+  - from: resources/icon.ico # Aggiungi questa riga per Windows
+    to: bin/icon.ico
+  - from: resources/icon.png # Per la finestra e per Mac
+    to: bin/icon.png
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: portable
+
+portable:
+  artifactName: "${productName}_Portable_${version}.${ext}"
+
+mac:
+  icon: build/icon.icns
+  target:
+    - dmg
