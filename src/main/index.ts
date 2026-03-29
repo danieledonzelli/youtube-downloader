@@ -2,7 +2,11 @@ import { app, BrowserWindow, ipcMain, Menu, MenuItem, nativeImage } from 'electr
 import path from 'path'
 import { electronApp, is } from '@electron-toolkit/utils'
 import fs from 'fs'
-import { spawn } from 'child_process'
+import { spawn, ChildProcess } from 'child_process'
+
+let activeProcess: ChildProcess | null = null
+let currentFilePath: string | null = null
+let isManualCancel = false
 
 function createWindow(): void {
   const isWin = process.platform === 'win32'
@@ -29,12 +33,13 @@ function createWindow(): void {
       menu.append(new MenuItem({ label: 'Taglia', role: 'cut' }))
       menu.append(new MenuItem({ label: 'Copia', role: 'copy' }))
       menu.append(new MenuItem({ label: 'Incolla', role: 'paste' }))
+      menu.append(new MenuItem({ type: 'separator' }))
+      menu.append(new MenuItem({ label: 'Seleziona tutto', role: 'selectAll' }))
       menu.popup()
     }
   })
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
-  
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -45,10 +50,30 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.youtube.downloader')
 
+  ipcMain.handle('cancel-download', async () => {
+    if (activeProcess) {
+      isManualCancel = true
+      activeProcess.kill('SIGINT') 
+      activeProcess = null
+      if (currentFilePath) {
+        const partFile = currentFilePath + '.part'
+        const ytdlFile = currentFilePath + '.ytdl'
+        setTimeout(() => {
+          if (fs.existsSync(currentFilePath!)) fs.unlinkSync(currentFilePath!)
+          if (fs.existsSync(partFile)) fs.unlinkSync(partFile)
+          if (fs.existsSync(ytdlFile)) fs.unlinkSync(ytdlFile)
+        }, 1000)
+      }
+      return 'Annullato'
+    }
+    return 'Nessun processo'
+  })
+
   ipcMain.handle('download-media', async (event, { url, format, quality }) => {
     const isWin = process.platform === 'win32'
     const isMac = process.platform === 'darwin'
     const arch = process.arch
+    isManualCancel = false
 
     try {
       const userBinPath = path.join(app.getPath('userData'), 'bin')
@@ -57,23 +82,13 @@ app.whenReady().then(async () => {
       const ytDlpPath = path.join(userBinPath, isWin ? 'yt-dlp.exe' : 'yt-dlp')
       const ffmpegPath = path.join(userBinPath, isWin ? 'ffmpeg.exe' : 'ffmpeg')
 
-      let sourceDir: string
-      if (is.dev) {
-        sourceDir = isWin 
-          ? path.join(app.getAppPath(), 'resources', 'win')
-          : path.join(app.getAppPath(), 'resources', 'mac', arch)
-      } else {
-        sourceDir = isWin 
-          ? path.join(process.resourcesPath, 'bin', 'win') 
-          : path.join(process.resourcesPath, 'bin')
-      }
+      let sourceDir = is.dev 
+        ? path.join(app.getAppPath(), 'resources', isWin ? 'win' : path.join('mac', arch))
+        : path.join(process.resourcesPath, 'bin', isWin ? 'win' : '')
 
       const sourceYtDlp = path.join(sourceDir, isWin ? 'yt-dlp.exe' : 'yt-dlp')
       const sourceFfmpeg = path.join(sourceDir, isWin ? 'ffmpeg.exe' : 'ffmpeg')
 
-      if (!fs.existsSync(sourceYtDlp)) throw new Error("Binari non trovati")
-
-      // Copia e permessi
       fs.copyFileSync(sourceYtDlp, ytDlpPath)
       fs.copyFileSync(sourceFfmpeg, ffmpegPath)
       if (isMac) {
@@ -85,13 +100,8 @@ app.whenReady().then(async () => {
       const outputPath = path.join(app.getPath('downloads'), outputTemplate)
 
       let args = [
-        url,
-        '--ffmpeg-location', ffmpegPath,
-        '-o', outputPath,
-        '--newline',
-        '--no-mtime',
-        '--force-overwrites',
-        '--no-warnings' // Aggiunto per nascondere i warning JavaScript nel terminale
+        url, '--ffmpeg-location', ffmpegPath, '-o', outputPath,
+        '--newline', '--no-playlist', '--no-mtime', '--force-overwrites', '--no-warnings'
       ]
 
       if (format === 'mp3') {
@@ -102,25 +112,35 @@ app.whenReady().then(async () => {
       }
 
       return new Promise((resolve, reject) => {
-        const ls = spawn(ytDlpPath, args, { detached: false, windowsHide: true })
+        activeProcess = spawn(ytDlpPath, args, { detached: false, windowsHide: true })
 
-        ls.stdout.on('data', (data) => {
-          const match = data.toString().match(/(\d+\.\d+)%/)
+        activeProcess.stdout?.on('data', (data) => {
+          const out = data.toString()
+          
+          // RILEVAMENTO FASE CONVERSIONE/MERGE
+          if (out.includes('[ExtractAudio]') || out.includes('[Merger]') || out.includes('[VideoConvertor]')) {
+            event.sender.send('download-status', 'converting')
+          }
+
+          if (out.includes('[download] Destination:')) {
+             const match = out.match(/Destination:\s(.+)/)
+             if (match) currentFilePath = match[1].trim()
+          }
+          const match = out.match(/(\d+\.\d+)%/)
           if (match) event.sender.send('download-progress', parseFloat(match[1]))
         })
 
-        ls.on('error', (err) => reject(err))
-        ls.on('close', (code) => {
+        activeProcess.on('close', (code) => {
+          activeProcess = null
           if (code === 0) resolve('Successo')
-          else reject(new Error(`Errore codice ${code}`))
+          else if (isManualCancel) resolve('Annullato')
+          else reject(new Error(`Errore ${code}`))
         })
       })
-
     } catch (error: any) {
       return { error: error.message }
     }
   })
-
   createWindow()
 })
 
